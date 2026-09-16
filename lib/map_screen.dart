@@ -17,6 +17,7 @@ import 'package:avaremp/gdl90/nexrad_cache.dart';
 import 'package:avaremp/gdl90/traffic_cache.dart';
 import 'package:avaremp/utils/compass_rose.dart';
 import 'package:avaremp/utils/geo_calculations.dart';
+import 'package:avaremp/data/layer_presets.dart';
 import 'package:avaremp/data/main_database_helper.dart';
 import 'package:avaremp/io/gps_recorder.dart';
 import 'package:avaremp/instruments/instrument_list.dart';
@@ -1767,7 +1768,10 @@ class MapScreenState extends State<MapScreen> {
     Navigator.of(context).push(
       PageRouteBuilder(
         opaque: false,
-        barrierDismissible: true,
+        // Deliberately NOT dismissible by the barrier. Users adjust these
+        // sliders in flight, and a drag that ends slightly off a control was
+        // closing the whole dialog. Close via the X or Cancel instead.
+        barrierDismissible: false,
         barrierColor: Colors.black26,
         pageBuilder: (context, _, __) => _LayerSelectorOverlay(
           layers: _layers,
@@ -1816,6 +1820,28 @@ class MapScreenState extends State<MapScreen> {
               _layersOpacity[index] = value;
             });
             Storage().settings.setLayersOpacity(_layersOpacity);
+          },
+          // Selecting a preset replaces every layer at once. This deliberately
+          // does not loop through onLayerChange: that path has a side effect
+          // for "Tracks" (on -> off saves a KML and resets the recorder), and
+          // that must not fire merely because a preset has Tracks switched off.
+          onPresetApply: (List<double> layerOpacity, List<double> productOpacity, String puck) {
+            setState(() {
+              for(int i = 0; i < _layersOpacity.length && i < layerOpacity.length; i++) {
+                _layersOpacity[i] = layerOpacity[i];
+              }
+              for(int i = 0; i < _weatherProductsOpacity.length && i < productOpacity.length; i++) {
+                _weatherProductsOpacity[i] = productOpacity[i];
+              }
+            });
+            Storage().settings.setLayersOpacity(_layersOpacity);
+            Storage().settings.setWeatherProductsOpacity(_weatherProductsOpacity);
+            Storage().settings.setTrafficPuckSize(puck);
+            Storage().trafficCache.changeArea(puck);
+            final int trafficIndex = _layers.indexOf("Traffic");
+            if(trafficIndex >= 0) {
+              Storage().cachedTrafficLayerOn = _layersOpacity[trafficIndex] > 0;
+            }
           },
         ),
       ),
@@ -2236,6 +2262,9 @@ class _LayerSelectorOverlay extends StatefulWidget {
   final void Function(int, double) onProductChange;
   final String trafficPuckSize;
   final void Function(String) onTrafficPuckChange;
+  /// Apply a whole saved configuration at once: layer opacities, weather
+  /// product opacities, traffic puck size.
+  final void Function(List<double>, List<double>, String) onPresetApply;
 
   const _LayerSelectorOverlay({
     required this.layers,
@@ -2248,6 +2277,7 @@ class _LayerSelectorOverlay extends StatefulWidget {
     required this.onProductChange,
     required this.trafficPuckSize,
     required this.onTrafficPuckChange,
+    required this.onPresetApply,
   });
 
   @override
@@ -2258,6 +2288,25 @@ class _LayerSelectorOverlayState extends State<_LayerSelectorOverlay> {
   late List<double> _localOpacity;
   late List<double> _localProductOpacity;
   late String _puck;
+
+  // Saved configurations shown in the dropdown at the top of the dialog.
+  // "default" is always present as the first entry and is never deleted; it is
+  // what selection falls back to when another preset is removed.
+  late List<LayerPreset> _presets;
+  late String _selected;
+
+  // State as it was when the dialog opened, so Cancel can put everything back.
+  // Layer changes apply live to the map, so reverting means re-applying this.
+  late final List<double> _openOpacity;
+  late final List<double> _openProductOpacity;
+  late final String _openPuck;
+  late final String _openPresetsJson;
+  late final String _openSelected;
+
+  // Debounce for writing edits into the selected preset, and a flag so a
+  // cancelled dialog does not flush those edits back out on dispose.
+  Timer? _persistTimer;
+  bool _cancelled = false;
 
   // layers that are listed under a parent layer rather than on their own
   static const List<String> _weatherSubLayers = ["Radar", "Ceiling", "Wind Vectors"];
@@ -2276,6 +2325,154 @@ class _LayerSelectorOverlayState extends State<_LayerSelectorOverlay> {
     _localOpacity = List.from(widget.layersOpacity);
     _localProductOpacity = List.from(widget.weatherProductsOpacity);
     _puck = widget.trafficPuckSize;
+
+    _presets = LayerPreset.decode(Storage().settings.getLayerPresets());
+    // On first run there is nothing stored; seed "default" from whatever the
+    // map is currently showing so the dropdown always has a valid selection.
+    if(!_presets.any((LayerPreset e) => e.name == LayerPreset.defaultName)) {
+      _presets.insert(0, _capture(LayerPreset.defaultName));
+    }
+    _selected = Storage().settings.getCurrentLayerPreset();
+    if(!_presets.any((LayerPreset e) => e.name == _selected)) {
+      _selected = LayerPreset.defaultName;
+    }
+
+    _openOpacity = List.from(_localOpacity);
+    _openProductOpacity = List.from(_localProductOpacity);
+    _openPuck = _puck;
+    _openPresetsJson = LayerPreset.encode(_presets);
+    _openSelected = _selected;
+  }
+
+  /// Snapshot the live dialog state under [name].
+  LayerPreset _capture(String name) {
+    return LayerPreset.capture(
+      name: name,
+      layerNames: widget.layers,
+      layerOpacity: _localOpacity,
+      productNames: widget.weatherProducts,
+      productOpacity: _localProductOpacity,
+      puck: _puck,
+    );
+  }
+
+  void _storePresets() {
+    Storage().settings.setLayerPresets(LayerPreset.encode(_presets));
+    Storage().settings.setCurrentLayerPreset(_selected);
+  }
+
+  /// There is no Save button: any toggle the user makes writes straight into
+  /// whichever preset is selected. Called from every onChanged in the dialog.
+  ///
+  /// Debounced, because the same onChanged also drives the opacity [Slider] and
+  /// so fires every frame of a drag. The map still updates live (that path is
+  /// unchanged); only the JSON encode plus preferences write is deferred.
+  void _persistToCurrent() {
+    _persistTimer?.cancel();
+    _persistTimer = Timer(const Duration(milliseconds: 400), _writeCurrent);
+  }
+
+  void _writeCurrent() {
+    _persistTimer?.cancel();
+    _persistTimer = null;
+    final int i = _presets.indexWhere((LayerPreset e) => e.name == _selected);
+    if(i < 0) {
+      return;
+    }
+    _presets[i] = _capture(_selected);
+    _storePresets();
+  }
+
+  /// Write any debounced change out now, before doing something that changes
+  /// which preset is selected — otherwise the tail of a drag lands in the
+  /// wrong preset, or is lost entirely.
+  void _flushPersist() {
+    if(_persistTimer?.isActive ?? false) {
+      _writeCurrent();
+    }
+  }
+
+  @override
+  void dispose() {
+    // Closing via the X keeps changes, so flush. Cancel already restored the
+    // snapshot, and flushing there would resurrect exactly what it discarded.
+    if(!_cancelled) {
+      _flushPersist();
+    }
+    _persistTimer?.cancel();
+    super.dispose();
+  }
+
+  /// Switch to another saved configuration and push it onto the map.
+  void _selectPreset(String name) {
+    // Land any in-flight edit in the preset being left, not the new one.
+    _flushPersist();
+    final LayerPreset? preset =
+        _presets.where((LayerPreset e) => e.name == name).firstOrNull;
+    if(preset == null) {
+      return;
+    }
+    final List<double> layerOpacity = preset.opacityFor(widget.layers);
+    final List<double> productOpacity = preset.productOpacityFor(widget.weatherProducts);
+    setState(() {
+      _selected = name;
+      _localOpacity = List.from(layerOpacity);
+      _localProductOpacity = List.from(productOpacity);
+      _puck = preset.puck;
+    });
+    widget.onPresetApply(layerOpacity, productOpacity, preset.puck);
+    _storePresets();
+  }
+
+  /// New: name the current settings, select the result, close the dialog.
+  Future<void> _newPreset() async {
+    _flushPersist();
+    // The controller lives inside _PresetNameDialog so it is disposed with that
+    // widget. Creating it here and disposing it once showDialog returns throws
+    // "used after being disposed": the AlertDialog is still running its exit
+    // animation with the TextField attached, which flashes a red error screen.
+    final String? name = await showDialog<String>(
+      context: context,
+      builder: (BuildContext context) => const _PresetNameDialog(),
+    );
+    if(name == null || name.trim().isEmpty) {
+      return;
+    }
+    final String unique = LayerPreset.uniqueName(name.trim(), _presets);
+    _presets.add(_capture(unique));
+    _selected = unique;
+    _storePresets();
+    if(mounted) {
+      Navigator.pop(context);
+    }
+  }
+
+  /// Delete: drop the selected preset and fall back to "default".
+  /// "default" itself is never deletable, since it is the fallback.
+  void _deletePreset() {
+    if(_selected == LayerPreset.defaultName) {
+      return;
+    }
+    // Do not flush: the preset those edits belong to is about to be removed.
+    _persistTimer?.cancel();
+    _persistTimer = null;
+    _presets.removeWhere((LayerPreset e) => e.name == _selected);
+    _selectPreset(LayerPreset.defaultName);
+    _storePresets();
+  }
+
+  /// Cancel: put the map and the stored presets back exactly as they were
+  /// when the dialog opened, then close.
+  void _cancel() {
+    _cancelled = true;
+    _persistTimer?.cancel();
+    _persistTimer = null;
+    _presets = LayerPreset.decode(_openPresetsJson);
+    _selected = _openSelected;
+    Storage().settings.setLayerPresets(_openPresetsJson);
+    Storage().settings.setCurrentLayerPreset(_openSelected);
+    widget.onPresetApply(_openOpacity, _openProductOpacity, _openPuck);
+    Navigator.pop(context);
   }
 
   // one icon / label / opacity slider line, used for layers and for the
@@ -2389,6 +2586,7 @@ class _LayerSelectorOverlayState extends State<_LayerSelectorOverlay> {
                     _puck = size.key;
                   });
                   widget.onTrafficPuckChange(size.key);
+                  _persistToCurrent();
                 },
                 child: Container(
                   width: 38,
@@ -2431,16 +2629,31 @@ class _LayerSelectorOverlayState extends State<_LayerSelectorOverlay> {
       child: Padding(
         padding: EdgeInsets.only(
           right: 8,
-          top: Constants.screenHeightForInstruments(context) + 50,
-          bottom: Constants.bottomPaddingSize(context) + 60,
+          // Trimmed from +50/+60: this padding, not maxHeight, is what
+          // actually bounds the dialog, so the preset row and button row
+          // were eating straight out of the layer list's height.
+          top: Constants.screenHeightForInstruments(context) + 10,
+          bottom: Constants.bottomPaddingSize(context) + 12,
         ),
         child: Material(
           color: Colors.transparent,
-          child: Container(
+          // The route is barrierDismissible, and a bare Container does not
+          // absorb pointer events: any part of the panel with no interactive
+          // child (the "Preset" label, padding, gaps between buttons) lets the
+          // touch fall through to the modal barrier, which closes the whole
+          // dialog. Swallow taps over the panel so only the X and Cancel close it.
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {},
+            child: Container(
             // wider than the other overlays to fit the indented sub-lists
             width: (Constants.screenWidth(context) - 24).clamp(0.0, 380.0),
             constraints: BoxConstraints(
-              maxHeight: Constants.screenHeight(context) * 0.7,
+              // The preset row and button row cost vertical space that used to
+              // belong to the layer list. Give some back: the less this list
+              // has to scroll, the less chance a scroll drag starts on an
+              // opacity slider and gets taken as a slider change instead.
+              maxHeight: Constants.screenHeight(context) * 0.85,
             ),
             decoration: BoxDecoration(
               color: Theme.of(context).scaffoldBackgroundColor.withAlpha(240),
@@ -2482,6 +2695,43 @@ class _LayerSelectorOverlayState extends State<_LayerSelectorOverlay> {
                     ],
                   ),
                 ),
+                // Preset picker. Choosing one applies it to the map immediately;
+                // any toggle made below then writes back into it.
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 2),
+                  child: Row(
+                    children: [
+                      Text(
+                        "Preset",
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<String>(
+                            value: _selected,
+                            isExpanded: true,
+                            items: _presets
+                                .map((LayerPreset e) => DropdownMenuItem<String>(
+                                      value: e.name,
+                                      child: Text(e.name, overflow: TextOverflow.ellipsis),
+                                    ))
+                                .toList(),
+                            onChanged: (String? value) {
+                              if(value != null) {
+                                _selectPreset(value);
+                              }
+                            },
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
                 Flexible(
                   child: Builder(
                     builder: (context) {
@@ -2502,6 +2752,7 @@ class _LayerSelectorOverlayState extends State<_LayerSelectorOverlay> {
                               _localOpacity[index] = value;
                             });
                             widget.onLayerChange(index, value);
+                            _persistToCurrent();
                           },
                         ));
                         if (name == "Weather" && _localOpacity[index] > 0) {
@@ -2517,6 +2768,7 @@ class _LayerSelectorOverlayState extends State<_LayerSelectorOverlay> {
                                   _localProductOpacity[productIndex] = value;
                                 });
                                 widget.onProductChange(productIndex, value);
+                                _persistToCurrent();
                               },
                             ));
                           }
@@ -2540,6 +2792,7 @@ class _LayerSelectorOverlayState extends State<_LayerSelectorOverlay> {
                                   _localOpacity[subIndex] = value;
                                 });
                                 widget.onLayerChange(subIndex, value);
+                                _persistToCurrent();
                               },
                             ));
                           }
@@ -2553,12 +2806,91 @@ class _LayerSelectorOverlayState extends State<_LayerSelectorOverlay> {
                     },
                   ),
                 ),
-                const SizedBox(height: 8),
+                const Divider(height: 1),
+                // New / Delete / Cancel. There is deliberately no Save: the
+                // toggles above already write into the selected preset as they
+                // are changed, and the X in the header keeps them.
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 2, 4, 6),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      TextButton.icon(
+                        onPressed: _newPreset,
+                        icon: const Icon(Icons.add, size: 18),
+                        label: const Text("New"),
+                        style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                      ),
+                      TextButton.icon(
+                        // "default" is what selection falls back to after a
+                        // delete, so it cannot itself be deleted.
+                        onPressed: _selected == LayerPreset.defaultName ? null : _deletePreset,
+                        icon: const Icon(Icons.delete_outline, size: 18),
+                        label: const Text("Delete"),
+                        style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                      ),
+                      TextButton.icon(
+                        onPressed: _cancel,
+                        icon: const Icon(Icons.undo, size: 18),
+                        label: const Text("Cancel"),
+                        style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                      ),
+                    ],
+                  ),
+                ),
               ],
+            ),
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Name prompt for a new layer preset.
+///
+/// A StatefulWidget purely so the [TextEditingController] is owned by the same
+/// widget as the [TextField] and disposed with it. Disposing a controller
+/// created by the caller right after `showDialog` returns races the dialog's
+/// exit animation and throws.
+class _PresetNameDialog extends StatefulWidget {
+  const _PresetNameDialog();
+
+  @override
+  State<_PresetNameDialog> createState() => _PresetNameDialogState();
+}
+
+class _PresetNameDialogState extends State<_PresetNameDialog> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text("New Preset"),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        textCapitalization: TextCapitalization.words,
+        decoration: const InputDecoration(hintText: "Preset name"),
+        onSubmitted: (String value) => Navigator.pop(context, value),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text("Cancel"),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context, _controller.text),
+          child: const Text("Save"),
+        ),
+      ],
     );
   }
 }

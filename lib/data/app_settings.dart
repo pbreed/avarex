@@ -420,4 +420,24 @@ class AppSettings {
     provider.setString("key-weather-products-opacity-v2", opacity.map((double e) => e.toString()).toList().join(","));
   }
 
+  /// Saved map-layer presets, as JSON. See [LayerPreset].
+  /// Empty until the user saves one; the layer dialog synthesizes the
+  /// "default" entry from the live settings so there is always one to select.
+  String getLayerPresets() {
+    return provider.getValue("key-layer-presets-v1", defaultValue: "") as String;
+  }
+
+  void setLayerPresets(String json) {
+    provider.setString("key-layer-presets-v1", json);
+  }
+
+  /// Name of the preset currently selected in the layer dialog dropdown.
+  String getCurrentLayerPreset() {
+    return provider.getValue("key-layer-preset-current-v1", defaultValue: "default") as String;
+  }
+
+  void setCurrentLayerPreset(String name) {
+    provider.setString("key-layer-preset-current-v1", name);
+  }
+
 }
