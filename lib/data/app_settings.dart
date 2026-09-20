@@ -38,6 +38,40 @@ class AppSettings {
     provider.setBool("key-rubber-banding", value);
   }
 
+  // Autopilot NMEA output over UDP (see io/autopilot_udp_sender.dart)
+  bool getApUdpEnabled() {
+    return provider.getValue("key-ap-udp-enabled", defaultValue: false) as bool;
+  }
+
+  void setApUdpEnabled(bool value) {
+    provider.setBool("key-ap-udp-enabled", value);
+  }
+
+  /// "Broadcast" or "Unicast"
+  String getApUdpMode() {
+    return provider.getValue("key-ap-udp-mode", defaultValue: "Broadcast") as String;
+  }
+
+  void setApUdpMode(String value) {
+    provider.setString("key-ap-udp-mode", value);
+  }
+
+  String getApUdpHost() {
+    return provider.getValue("key-ap-udp-host", defaultValue: "") as String;
+  }
+
+  void setApUdpHost(String value) {
+    provider.setString("key-ap-udp-host", value);
+  }
+
+  int getApUdpPort() {
+    return provider.getValue("key-ap-udp-port", defaultValue: 10110) as int;
+  }
+
+  void setApUdpPort(int value) {
+    provider.setInt("key-ap-udp-port", value);
+  }
+
   bool isLightMode() {
     return provider.getValue("key-light-mode", defaultValue: false) as bool;
   }
