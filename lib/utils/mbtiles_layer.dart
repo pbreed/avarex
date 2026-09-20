@@ -165,8 +165,10 @@ class MBTilesLayerManager {
         'source-layer': layerName,
         'filter': ['==', 'CLASS', 'B'],
         'paint': {
-          'fill-color': '#0000FF',
-          'fill-opacity': 0.35,
+          // Light tint only: the sector outlines carry the structure now, and
+          // a heavy fill hides the underlying chart and darkens the labels.
+          'fill-color': '#3366FF',
+          'fill-opacity': 0.15,
         }
       },
       {
@@ -177,7 +179,7 @@ class MBTilesLayerManager {
         'filter': ['==', 'CLASS', 'C'],
         'paint': {
           'fill-color': '#FF00FF',
-          'fill-opacity': 0.3,
+          'fill-opacity': 0.12,
         }
       },
       {
@@ -188,7 +190,7 @@ class MBTilesLayerManager {
         'filter': ['==', 'CLASS', 'D'],
         'paint': {
           'fill-color': '#0088FF',
-          'fill-opacity': 0.25,
+          'fill-opacity': 0.10,
         }
       },
       // Sector boundaries. Without these every sector of a Class B is filled
@@ -253,7 +255,8 @@ class MBTilesLayerManager {
   /// usable. LOWER_CODE distinguishes a surface sector from an MSL one, and it
   /// genuinely varies (San Diego AREA F is SFC, AREA P is MSL) -- so a surface
   /// floor prints "SFC" instead of a misleading "0".
-  static List<dynamic> _altitudeLabel() {
+  @visibleForTesting
+  static List<dynamic> classAltitudeLabel() {
     return [
       'concat',
       ['get', 'UPPER_VAL'],
@@ -266,6 +269,43 @@ class MBTilesLayerManager {
         ['get', 'LOWER_VAL'],
       ],
     ];
+  }
+
+  /// One altitude limit of a special-use airspace, sectional style: MSL
+  /// values bare, AGL values suffixed, "SFC", "FLxxx" or "UNL".
+  ///
+  /// The SUA layer carries {prefix}_LIMIT / _REF / _UOM (and a preformatted
+  /// {prefix}_VAL, which is unusable because the FAA zero-pads some limits
+  /// and not others: "01000 AGL" next to "1000 AGL"). Decoding the tiles
+  /// shows the codes are consistent: UOM FL is a flight level, REF SFC means
+  /// AGL (or the surface when the limit is GND/0), REF MSL is MSL, and an
+  /// unlimited ceiling is LIMIT "UNL" with UOM OTHER. to-number strips the
+  /// zero padding.
+  static List<dynamic> _suaLimit(String prefix) {
+    final limit = ['get', '${prefix}_LIMIT'];
+    final number = ['to-number', limit];
+    return [
+      'case',
+      ['==', limit, 'UNL'], 'UNL',
+      ['==', ['get', '${prefix}_UOM'], 'FL'], ['concat', 'FL', number],
+      ['==', limit, 'GND'], 'SFC',
+      ['==', number, 0], 'SFC',
+      ['==', ['get', '${prefix}_REF'], 'SFC'], ['concat', number, ' AGL'],
+      number,
+    ];
+  }
+
+  /// Ceiling-over-floor for special-use airspace, e.g. "FL180/1000 AGL".
+  @visibleForTesting
+  static List<dynamic> suaAltitudeLabel() {
+    return ['concat', _suaLimit('UPPER'), '/', _suaLimit('LOWER')];
+  }
+
+  /// Special-use airspace label: the name still matters here (R-2508 is how a
+  /// pilot looks it up), so keep it and put the altitudes on a second line.
+  @visibleForTesting
+  static List<dynamic> suaLabel() {
+    return ['concat', ['get', 'NAME'], '\n', suaAltitudeLabel()];
   }
 
   static List<Map<String, dynamic>> _buildSuaAirspaceThemeLayers(String layerName) {
@@ -342,6 +382,84 @@ class MBTilesLayerManager {
           'fill-opacity': 0.25,
         }
       },
+      // Boundaries, for the same reason as the Class B/C/D sector outlines:
+      // adjacent SUA (R-2508 complex, the ABEL MOAs, a MOA over a restricted
+      // area) are separate features with different limits, and with fill
+      // alone they merge into one blob. Sectional convention: restricted,
+      // prohibited, warning and alert are solid blue hatched; MOAs are
+      // magenta hatched. Hatching is not available, so the line colours
+      // follow the existing fills instead, with regulatory (R/P) solid and
+      // advisory (MOA/W/A/NSA) dashed.
+      {
+        'id': '${layerName}_prohibited_line',
+        'type': 'line',
+        'source': 'mbtiles',
+        'source-layer': layerName,
+        'filter': ['==', 'TYPE', 'PROHIBITED'],
+        'paint': {
+          'line-color': '#CC0000',
+          'line-width': 2.0,
+        }
+      },
+      {
+        'id': '${layerName}_restricted_line',
+        'type': 'line',
+        'source': 'mbtiles',
+        'source-layer': layerName,
+        'filter': ['==', 'TYPE', 'RESTRICTED'],
+        'paint': {
+          'line-color': '#0044CC',
+          'line-width': 1.5,
+        }
+      },
+      {
+        'id': '${layerName}_moa_line',
+        'type': 'line',
+        'source': 'mbtiles',
+        'source-layer': layerName,
+        'filter': ['==', 'TYPE', 'MOA'],
+        'paint': {
+          'line-color': '#7A4A1F',
+          'line-width': 1.5,
+          'line-dasharray': [4, 2],
+        }
+      },
+      {
+        'id': '${layerName}_warning_line',
+        'type': 'line',
+        'source': 'mbtiles',
+        'source-layer': layerName,
+        'filter': ['==', 'TYPE', 'WARNING'],
+        'paint': {
+          'line-color': '#0066CC',
+          'line-width': 1.5,
+          'line-dasharray': [4, 2],
+        }
+      },
+      {
+        'id': '${layerName}_alert_line',
+        'type': 'line',
+        'source': 'mbtiles',
+        'source-layer': layerName,
+        'filter': ['==', 'TYPE', 'ALERT'],
+        'paint': {
+          'line-color': '#CC6600',
+          'line-width': 1.5,
+          'line-dasharray': [4, 2],
+        }
+      },
+      {
+        'id': '${layerName}_nsa_line',
+        'type': 'line',
+        'source': 'mbtiles',
+        'source-layer': layerName,
+        'filter': ['==', 'TYPE', 'NSA'],
+        'paint': {
+          'line-color': '#1E6B1E',
+          'line-width': 1.5,
+          'line-dasharray': [2, 2],
+        }
+      },
     ];
   }
 
@@ -354,7 +472,7 @@ class MBTilesLayerManager {
         'source-layer': layerName,
         'filter': ['==', 'CLASS', 'B'],
         'layout': {
-          'text-field': _altitudeLabel(),
+          'text-field': classAltitudeLabel(),
           'text-size': 12,
         },
         'paint': {
@@ -370,7 +488,7 @@ class MBTilesLayerManager {
         'source-layer': layerName,
         'filter': ['==', 'CLASS', 'C'],
         'layout': {
-          'text-field': _altitudeLabel(),
+          'text-field': classAltitudeLabel(),
           'text-size': 11,
         },
         'paint': {
@@ -386,7 +504,7 @@ class MBTilesLayerManager {
         'source-layer': layerName,
         'filter': ['==', 'CLASS', 'D'],
         'layout': {
-          'text-field': _altitudeLabel(),
+          'text-field': classAltitudeLabel(),
           'text-size': 10,
         },
         'paint': {
@@ -407,7 +525,7 @@ class MBTilesLayerManager {
         'source-layer': layerName,
         'filter': ['==', 'TYPE', 'MOA'],
         'layout': {
-          'text-field': '{NAME}',
+          'text-field': suaLabel(),
           'text-size': 10,
         },
         'paint': {
@@ -423,7 +541,7 @@ class MBTilesLayerManager {
         'source-layer': layerName,
         'filter': ['==', 'TYPE', 'RESTRICTED'],
         'layout': {
-          'text-field': '{NAME}',
+          'text-field': suaLabel(),
           'text-size': 10,
         },
         'paint': {
@@ -439,7 +557,7 @@ class MBTilesLayerManager {
         'source-layer': layerName,
         'filter': ['==', 'TYPE', 'WARNING'],
         'layout': {
-          'text-field': '{NAME}',
+          'text-field': suaLabel(),
           'text-size': 10,
         },
         'paint': {
@@ -455,7 +573,7 @@ class MBTilesLayerManager {
         'source-layer': layerName,
         'filter': ['==', 'TYPE', 'ALERT'],
         'layout': {
-          'text-field': '{NAME}',
+          'text-field': suaLabel(),
           'text-size': 10,
         },
         'paint': {
@@ -471,7 +589,7 @@ class MBTilesLayerManager {
         'source-layer': layerName,
         'filter': ['==', 'TYPE', 'PROHIBITED'],
         'layout': {
-          'text-field': '{NAME}',
+          'text-field': suaLabel(),
           'text-size': 11,
         },
         'paint': {
@@ -487,7 +605,7 @@ class MBTilesLayerManager {
         'source-layer': layerName,
         'filter': ['==', 'TYPE', 'NSA'],
         'layout': {
-          'text-field': '{NAME}',
+          'text-field': suaLabel(),
           'text-size': 10,
         },
         'paint': {
