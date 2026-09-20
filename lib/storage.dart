@@ -36,6 +36,7 @@ import 'package:avaremp/weather/notam_cache.dart';
 import 'package:avaremp/weather/taf_cache.dart';
 import 'package:avaremp/weather/tfr_cache.dart';
 import 'package:avaremp/io/udp_receiver.dart';
+import 'package:avaremp/io/autopilot_udp_sender.dart';
 import 'package:avaremp/plan/waypoint.dart';
 import 'package:avaremp/weather/weather_cache.dart';
 import 'package:avaremp/weather/winds_cache.dart';
@@ -201,6 +202,7 @@ class Storage {
   // gps
   final _gps = Gps();
   final _udpReceiver = UdpReceiver();
+  final AutopilotUdpSender autopilotUdp = AutopilotUdpSender();
   // where all data is place. This is set on init in main
   late String dataDir;
   late String cacheDir;
@@ -393,6 +395,7 @@ class Storage {
   }
 
   void stopIO() {
+    autopilotUdp.close();
     try {
       _udpReceiver.finish();
     }
@@ -507,6 +510,7 @@ class Storage {
       // send AP data
       String data = AutoPilot.apCreateSentences();
       IoScreenState.sendData(data);
+      autopilotUdp.send(data);
     });
 
     Timer.periodic(const Duration(milliseconds: 100), (tim) async {

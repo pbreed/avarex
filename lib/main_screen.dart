@@ -416,9 +416,9 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver { //
                             },
                           ),
                       ],
-                      if (Constants.shouldShowBluetoothSpp) ...[
-                        const SizedBox(height: 8),
-                        _buildSectionHeader(context, "Connectivity"),
+                      const SizedBox(height: 8),
+                      _buildSectionHeader(context, "Connectivity"),
+                      if (Constants.shouldShowBluetoothSpp)
                         _buildMenuItem(
                           context,
                           icon: Icons.compare_arrows_rounded,
@@ -429,7 +429,16 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver { //
                             Navigator.pushNamed(context, '/io');
                           },
                         ),
-                      ],
+                      _buildMenuItem(
+                        context,
+                        icon: Icons.wifi_tethering,
+                        title: "Autopilot UDP",
+                        subtitle: "Send NMEA to the network",
+                        onTap: () {
+                          Navigator.pop(context);
+                          Navigator.pushNamed(context, '/autopilot_udp');
+                        },
+                      ),
                       const SizedBox(height: 8),
                       _buildSectionHeader(context, "Support"),
                       if (Constants.shouldShowPdf)

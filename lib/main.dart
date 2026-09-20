@@ -18,6 +18,7 @@ import 'destination/destination.dart';
 import 'documents_screen.dart';
 import 'chart/download_screen.dart';
 import 'firebase_options.dart';
+import 'io/autopilot_udp_screen.dart';
 import 'io/io_screen.dart';
 import 'main_screen.dart';
 import 'scheduler/scheduler_screen.dart';
@@ -109,6 +110,7 @@ class MainApp extends StatelessWidget {
               '/logbook': (context) => const LogbookScreen(),
               '/pro': (context) => const LoginScreen(),
               if(Constants.shouldShowBluetoothSpp) '/io': (context) => const IoScreen(),
+              '/autopilot_udp': (context) => const AutopilotUdpScreen(),
               '/notes': (context) => const WritingScreen(),
               '/plan_actions': (context) => const PlanActionScreen(),
               '/ai': (context) => const AiScreen(),
