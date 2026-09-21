@@ -93,7 +93,7 @@ class LoginScreenState extends State<LoginScreen> {
 
     final accountAppBar = AppBar(
       backgroundColor: Constants.appBarBackgroundColor,
-      title: const Text("Account"),
+      title: const Text("PaulsAvare Account (Linux build)"),
     );
 
     if (isLoggedIn) {
@@ -116,7 +116,7 @@ class LoginScreenState extends State<LoginScreen> {
           height: 58,
           child: Padding(
             padding: EdgeInsets.all(10),
-            child: Text("Please register/sign in to access cloud services"),
+            child: Text("*** PAULSAVARE LINUX BUILD *** Please register/sign in to access cloud services"),
           ),
         ),
         body: SignInScreen(

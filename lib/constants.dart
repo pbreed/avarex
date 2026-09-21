@@ -103,6 +103,10 @@ class Constants {
   static final bool shouldShowBluetoothSpp = (Platform.isAndroid);
   static final bool shouldShouldReview = (Platform.isMacOS || Platform.isIOS | Platform.isAndroid || Platform.isWindows);
   static final bool shouldShowProServices = (Platform.isIOS || Platform.isAndroid);
+  // PaulsAvare: hide the Flight Intelligence button overlaid on the map. It
+  // sits under the instruments at the right edge and gets hit by finger drags,
+  // which pushes the sign-in screen. The menu entry still exists.
+  static const bool shouldShowMapAiButton = false;
 
   // Whether the Firebase-backed cloud features (e.g. Airport Businesses &
   // Reviews) are available. Firebase is only initialized on these platforms
